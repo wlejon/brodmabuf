@@ -105,6 +105,11 @@ public:
     [[nodiscard]] T& value() & { return std::get<T>(data_); }
     [[nodiscard]] T&& value() && { return std::get<T>(std::move(data_)); }
 
+    [[nodiscard]] const T* operator->() const noexcept { return &value(); }
+    [[nodiscard]] T* operator->() noexcept { return &value(); }
+    [[nodiscard]] const T& operator*() const& noexcept { return value(); }
+    [[nodiscard]] T& operator*() & noexcept { return value(); }
+
     [[nodiscard]] const Status& status() const& {
         static const Status kOk = Status::ok();
         return ok() ? kOk : std::get<Status>(data_);

@@ -39,6 +39,7 @@ set(BRODMABUF_SOURCES
     src/sync.cpp
     src/vulkan.cpp
     src/kms.cpp
+    src/allocator.cpp
 )
 
 add_library(brodmabuf STATIC ${BRODMABUF_SOURCES})
