@@ -65,10 +65,12 @@ public:
     [[nodiscard]] uint64_t modifier() const noexcept;
     [[nodiscard]] int plane_count() const noexcept;
 
-    /// Export single/primary file descriptor.
+    /// Export single/primary file descriptor. Exports are read-write
+    /// (DRM_RDWR), so an importer can mmap them for writing; some GBM
+    /// backends (kms_swrast) would otherwise hand out read-only ones.
     [[nodiscard]] UniqueFd export_fd() const noexcept;
 
-    /// Export file descriptor for a specific plane (0-indexed).
+    /// Export file descriptor for a specific plane (0-indexed), read-write.
     [[nodiscard]] UniqueFd export_fd(int plane) const noexcept;
 
     /// Export complete DMA-BUF attributes including plane fds, strides, offsets, and modifier.

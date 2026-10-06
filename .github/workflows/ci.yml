@@ -19,13 +19,14 @@ concurrency:
 #   unavailable reporting (test_unavailable)      windows-msvc (Release, Debug), macos-arm64
 #   GBM, Vulkan, sync, KMS (the Linux library)    linux-*, coverage
 #
-# GitHub's runners have no GPU, so the Linux jobs load two virtual devices on
-# the host (.github/ci/host-devices.sh) and run in debian:trixie, whose Mesa 25
-# has what the tests need: vkms, a KMS card GBM allocates on through
-# kms_swrast and test_kms takes DRM master and modesets on; and udmabuf, which
-# lavapipe allocates exportable memory from, so DMA-BUFs go into and out of a
-# real Vulkan driver. vkms implements no drm_syncobj, so test_sync's syncobj
-# and timeline parts skip there and say so (they run on GPU drivers).
+# GitHub's runners have no GPU, so the Linux jobs load virtual devices on the
+# host (.github/ci/host-devices.sh) and run in debian:trixie (Mesa 25): vkms,
+# a KMS card GBM allocates on through kms_swrast and test_kms takes DRM master
+# and modesets on; and udmabuf, which lavapipe needs before it offers DMA-BUF
+# import/export. The runners' Azure kernel has no udmabuf, so test_vulkan and
+# test_sync's Vulkan part skip (they would run if a kernel offers it). vkms
+# implements no drm_syncobj, so test_sync's syncobj and timeline parts skip
+# too. All of those are verified on a GPU (amdgpu + RADV), not here.
 #
 # Every test that cannot run exits 77 and ctest lists it as skipped, never as
 # passed. Every test step ends with the skipped tests and the skipped checks
@@ -116,7 +117,7 @@ jobs:
           {
             echo '## Coverage — `src/` + `include/brodmabuf/`'
             echo
-            echo 'Linux under vkms + lavapipe: drm_syncobj paths are not reached (vkms has none).'
+            echo 'Linux under vkms: drm_syncobj (vkms has none) and Vulkan DMA-BUF (no udmabuf in the runner kernel) paths are not reached.'
             echo
             echo '```'
             cat coverage-summary.txt

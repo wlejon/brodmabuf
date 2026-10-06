@@ -146,14 +146,16 @@ Environment: `BRODMABUF_DRM_DEVICE` picks the DRM node, `BRODMABUF_KMS_DEVICE`
 the card for `test_kms`.
 
 What runs where (CI: `.github/workflows/ci.yml`): GitHub's runners have no
-GPU, so the Linux jobs load **vkms** (a virtual KMS card, on which `test_kms`
-takes DRM master and modesets) and **udmabuf** (which lavapipe allocates
-exportable memory from) on the host and run the tests in `debian:trixie`.
-vkms implements no `drm_syncobj`, so the syncobj and timeline parts of
-`test_sync` run only on real GPU drivers; they are verified on amdgpu (Arch,
-Linux 7.2). Modesetting is not exercised on a machine whose display server
-holds master. Each job's log ends with the tests and checks it skipped, and
-why (`.github/ci/ctest.sh`).
+GPU, so the Linux jobs load **vkms** on the host (a virtual KMS card: GBM
+allocates on it through `kms_swrast`, and `test_kms` takes DRM master and
+modesets on it) and run the tests in `debian:trixie`. They also try
+**udmabuf**, which lavapipe needs to offer DMA-BUF import and export, but
+the runners' Azure kernel does not ship it, so `test_vulkan` and the Vulkan
+part of `test_sync` skip there and say so. vkms implements no `drm_syncobj`,
+so the syncobj and timeline parts of `test_sync` skip there too. Those parts
+are verified on amdgpu (Arch, Linux 7.2, RADV), where in turn modesetting
+skips because the running display server holds DRM master. Each job's log
+ends with the tests and checks it skipped, and why (`.github/ci/ctest.sh`).
 
 ## License
 

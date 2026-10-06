@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <xf86drm.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -132,15 +133,30 @@ int GbmBuffer::plane_count() const noexcept {
     return (count > 0) ? count : 1;
 }
 
+namespace {
+
+// PRIME-exports the plane's GEM handle read-write. gbm_bo_get_fd() leaves the
+// access mode to the backend, and some (kms_swrast) export read-only.
+int export_rdwr(gbm_bo* bo, int plane) {
+    const int drm_fd = gbm_device_get_fd(gbm_bo_get_device(bo));
+    const gbm_bo_handle handle = gbm_bo_get_handle_for_plane(bo, plane);
+    if (drm_fd < 0 || handle.s32 <= 0) return -1;
+    int fd = -1;
+    if (drmPrimeHandleToFD(drm_fd, handle.u32, DRM_CLOEXEC | DRM_RDWR, &fd) != 0) return -1;
+    return fd;
+}
+
+}  // namespace
+
 UniqueFd GbmBuffer::export_fd() const noexcept {
-    if (!bo_) return UniqueFd();
-    int fd = gbm_bo_get_fd(bo_);
-    return UniqueFd(fd);
+    return export_fd(0);
 }
 
 UniqueFd GbmBuffer::export_fd(int plane) const noexcept {
     if (!bo_) return UniqueFd();
-    int fd = gbm_bo_get_fd_for_plane(bo_, plane);
+    int fd = export_rdwr(bo_, plane);
+    if (fd >= 0) return UniqueFd(fd);
+    fd = gbm_bo_get_fd_for_plane(bo_, plane);
     if (fd < 0 && plane == 0) {
         fd = gbm_bo_get_fd(bo_);
     }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The Linux build and tests inside debian:trixie (Mesa 25: lavapipe with
-# DMA-BUF import/export over udmabuf, GBM's kms_swrast for vkms). Called by CI
+# The Linux build and tests inside debian:trixie (Mesa 25: GBM's kms_swrast
+# for vkms; lavapipe, which offers DMA-BUF only when udmabuf exists). Called by CI
 # as the container's command with the workspace mounted at /w.
 #
 # Environment: CC / CXX (gcc|clang), CONFIG (Release|Debug), COVERAGE (ON|OFF),
