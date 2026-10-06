@@ -1,7 +1,7 @@
 #include "brodmabuf/buffer.h"
 
 #include <sys/stat.h>
-#include <unistd.h>
+#include <sys/types.h>
 #include <algorithm>
 
 namespace brodmabuf {
@@ -48,6 +48,11 @@ bool DmaBufAttributes::is_valid() const noexcept {
 
 bool DmaBufAttributes::is_disjoint() const noexcept {
     if (planes.size() <= 1) return false;
+#if defined(_WIN32)
+    // Windows file descriptors carry no inode identity to compare, and there
+    // are no DMA-BUFs to describe there anyway.
+    return false;
+#else
 
     struct stat first_stat{};
     if (fstat(planes[0].fd.get(), &first_stat) != 0) {
@@ -65,6 +70,7 @@ bool DmaBufAttributes::is_disjoint() const noexcept {
     }
 
     return false;
+#endif
 }
 
 uint64_t DmaBufAttributes::total_size() const noexcept {
@@ -112,20 +118,37 @@ uint32_t calculate_min_stride(uint32_t drm_format, uint32_t width, size_t plane)
     switch (drm_format) {
         case DRM_FORMAT_NV12:
         case DRM_FORMAT_NV21:
-            // Plane 0: Y (1 byte per pixel), Plane 1: UV/VU (2 bytes per sub-pixel)
-            return (plane == 0) ? width : width;
+        case DRM_FORMAT_NV16:
+        case DRM_FORMAT_NV61:
+        case DRM_FORMAT_NV24:
+        case DRM_FORMAT_NV42:
+            // Plane 0: Y, 1 byte per pixel. Plane 1: interleaved UV/VU, 2 bytes
+            // per subsampled pixel.
+            return (plane == 0) ? width : plane_width * 2;
 
+        case DRM_FORMAT_YUV410:
+        case DRM_FORMAT_YVU410:
+        case DRM_FORMAT_YUV411:
+        case DRM_FORMAT_YVU411:
         case DRM_FORMAT_YUV420:
         case DRM_FORMAT_YVU420:
-            // Plane 0: Y (1 byte), Plane 1: U (1 byte, subsampled 2), Plane 2: V (1 byte, subsampled 2)
+        case DRM_FORMAT_YUV422:
+        case DRM_FORMAT_YVU422:
+        case DRM_FORMAT_YUV444:
+        case DRM_FORMAT_YVU444:
+            // One byte per sample in each plane.
             return (plane == 0) ? width : plane_width;
 
         case DRM_FORMAT_P010:
-            // Plane 0: Y (2 bytes per pixel), Plane 1: UV (4 bytes per sub-pixel)
-            return (plane == 0) ? width * 2 : width * 2;
+        case DRM_FORMAT_P012:
+        case DRM_FORMAT_P016:
+            // 16-bit samples. Plane 0: Y, 2 bytes. Plane 1: UV, 4 bytes per
+            // subsampled pixel.
+            return (plane == 0) ? width * 2 : plane_width * 4;
 
         default:
-            return width * 4;
+            // A planar format this table does not know: no honest minimum.
+            return 0;
     }
 }
 

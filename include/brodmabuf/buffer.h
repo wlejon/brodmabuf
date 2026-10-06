@@ -61,6 +61,7 @@ struct DmaBufAttributes {
 };
 
 /// Minimum row stride for a given format, width, and plane index.
+/// 0 when the plane index is out of range or the format's layout is unknown.
 uint32_t calculate_min_stride(uint32_t drm_format, uint32_t width, size_t plane) noexcept;
 
 /// Minimum plane buffer size in bytes for a given format, width, height, plane index, and stride.

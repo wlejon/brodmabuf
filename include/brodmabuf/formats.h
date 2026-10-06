@@ -1,7 +1,14 @@
 #pragma once
 
+// The format model is portable: on Linux the codes come from the kernel's
+// <drm_fourcc.h> (libdrm), elsewhere from brodmabuf's copy of the same values.
+// The VkFormat mapping exists only on Linux, where the DMA-BUF importer is.
+#if defined(__linux__)
 #include <drm_fourcc.h>
 #include <vulkan/vulkan.h>
+#else
+#include "brodmabuf/drm_fourcc_compat.h"
+#endif
 
 #include <cstdint>
 #include <optional>
@@ -56,6 +63,7 @@ std::string drm_modifier_to_string(uint64_t modifier);
 /// Returns DRM_FORMAT_MOD_INVALID on parse error.
 uint64_t drm_modifier_from_string(std::string_view name);
 
+#if defined(__linux__)
 /// Convert a DRM format FourCC code to corresponding VkFormat.
 /// Returns VK_FORMAT_UNDEFINED if there is no direct equivalent.
 VkFormat drm_format_to_vk_format(uint32_t drm_fourcc) noexcept;
@@ -66,5 +74,6 @@ uint32_t vk_format_to_drm_format(VkFormat vk_format) noexcept;
 
 /// Check if a DRM FourCC format can be mapped to Vulkan.
 bool is_drm_format_vulkan_compatible(uint32_t drm_fourcc) noexcept;
+#endif
 
 }  // namespace brodmabuf

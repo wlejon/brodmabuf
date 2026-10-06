@@ -10,8 +10,26 @@
 
 #include <cerrno>
 #include <cstring>
+#include <ctime>
 
 namespace brodmabuf {
+
+namespace {
+
+// DRM_IOCTL_SYNCOBJ_WAIT takes an absolute CLOCK_MONOTONIC deadline; the API
+// takes a relative timeout. 0 stays 0 (a deadline in the past: just poll).
+int64_t absolute_deadline(uint64_t timeout_nsec) {
+    if (timeout_nsec == 0) return 0;
+    struct timespec now{};
+    ::clock_gettime(CLOCK_MONOTONIC, &now);
+    const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull +
+                            static_cast<uint64_t>(now.tv_nsec);
+    const uint64_t limit = static_cast<uint64_t>(INT64_MAX);
+    if (timeout_nsec > limit - now_ns) return INT64_MAX;
+    return static_cast<int64_t>(now_ns + timeout_nsec);
+}
+
+}  // namespace
 
 // -----------------------------------------------------------------------------
 // SyncObj
@@ -127,7 +145,7 @@ Result<bool> SyncObj::wait(uint64_t timeout_nsec, uint32_t flags) {
     if (flags == 0) {
         flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
     }
-    int ret = drmSyncobjWait(drm_fd_, &handle_, 1, timeout_nsec, flags, &first_signaled);
+    int ret = drmSyncobjWait(drm_fd_, &handle_, 1, absolute_deadline(timeout_nsec), flags, &first_signaled);
     if (ret == 0) {
         return true;
     }
@@ -152,7 +170,8 @@ Result<bool> SyncObj::timeline_wait(uint64_t point, uint64_t timeout_nsec, uint3
     if (flags == 0) {
         flags = DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT;
     }
-    int ret = drmSyncobjTimelineWait(drm_fd_, &handle_, &point, 1, timeout_nsec, flags, &first_signaled);
+    int ret = drmSyncobjTimelineWait(drm_fd_, &handle_, &point, 1, absolute_deadline(timeout_nsec), flags,
+                                     &first_signaled);
     if (ret == 0) {
         return true;
     }

@@ -72,6 +72,10 @@ private:
 
 }  // namespace
 
+Status platform_status() {
+    return Status::ok();
+}
+
 Result<std::unique_ptr<DmaBufAllocator>> DmaBufAllocator::create_default() {
     std::string node = find_render_node();
     if (node.empty()) {

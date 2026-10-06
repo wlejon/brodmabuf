@@ -1,5 +1,9 @@
 #pragma once
 
+#if !defined(__linux__)
+#error "brodmabuf/gbm.h is Linux-only (Mesa GBM). Off Linux use allocator.h, whose factories report why DMA-BUF is unavailable."
+#endif
+
 #include "brodmabuf/buffer.h"
 #include "brodmabuf/types.h"
 

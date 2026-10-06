@@ -1,5 +1,9 @@
 #pragma once
 
+#if !defined(__linux__)
+#error "brodmabuf/sync.h is Linux-only (drm_syncobj, sync_file). Off Linux use allocator.h, whose factories report why DMA-BUF is unavailable."
+#endif
+
 #include "brodmabuf/types.h"
 
 #include <vulkan/vulkan.h>

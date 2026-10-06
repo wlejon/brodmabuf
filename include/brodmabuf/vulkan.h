@@ -1,5 +1,9 @@
 #pragma once
 
+#if !defined(__linux__)
+#error "brodmabuf/vulkan.h is Linux-only (VK_EXT_external_memory_dma_buf). Off Linux use allocator.h, whose factories report why DMA-BUF is unavailable."
+#endif
+
 #include "brodmabuf/buffer.h"
 #include "brodmabuf/formats.h"
 #include "brodmabuf/types.h"

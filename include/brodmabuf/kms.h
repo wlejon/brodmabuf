@@ -1,5 +1,9 @@
 #pragma once
 
+#if !defined(__linux__)
+#error "brodmabuf/kms.h is Linux-only (DRM/KMS). Off Linux use allocator.h, whose factories report why DMA-BUF is unavailable."
+#endif
+
 #include "brodmabuf/buffer.h"
 #include "brodmabuf/types.h"
 
@@ -112,7 +116,9 @@ public:
     bool set_in_fence(const KmsPlaneProps& props, uint32_t plane_id, int fence_fd) noexcept;
 
     /// Request an explicit synchronization out-fence file descriptor on a CRTC.
-    bool set_out_fence_ptr(const KmsCrtcProps& props, uint32_t crtc_id, uint64_t* out_fence_ptr) noexcept;
+    /// The kernel writes the fence fd (an s32) to *out_fence_fd when the commit
+    /// succeeds; it must stay valid until commit() returns.
+    bool set_out_fence_ptr(const KmsCrtcProps& props, uint32_t crtc_id, int32_t* out_fence_fd) noexcept;
 
     /// Commit this atomic request.
     Result<void> commit(int drm_fd, uint32_t flags, void* user_data = nullptr) noexcept;

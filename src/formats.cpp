@@ -141,6 +141,10 @@ uint32_t drm_format_bytes_per_pixel(uint32_t f) noexcept {
         case DRM_FORMAT_XRGB2101010:
         case DRM_FORMAT_ABGR2101010:
         case DRM_FORMAT_XBGR2101010:
+        case DRM_FORMAT_RGBX1010102:
+        case DRM_FORMAT_BGRX1010102:
+        case DRM_FORMAT_RGBA1010102:
+        case DRM_FORMAT_BGRA1010102:
             return 4;
 
         case DRM_FORMAT_RGB565:
@@ -234,8 +238,22 @@ bool drm_format_plane_subsampling(uint32_t f, size_t plane,
         case DRM_FORMAT_YUV420:
         case DRM_FORMAT_YVU420:
         case DRM_FORMAT_P010:
+        case DRM_FORMAT_P012:
+        case DRM_FORMAT_P016:
             *h_subsample = 2;
             *v_subsample = 2;
+            return true;
+
+        case DRM_FORMAT_YUV410:
+        case DRM_FORMAT_YVU410:
+            *h_subsample = 4;
+            *v_subsample = 4;
+            return true;
+
+        case DRM_FORMAT_YUV411:
+        case DRM_FORMAT_YVU411:
+            *h_subsample = 4;
+            *v_subsample = 1;
             return true;
 
         case DRM_FORMAT_NV16:
@@ -331,6 +349,11 @@ uint64_t drm_modifier_from_string(std::string_view name) {
     return DRM_FORMAT_MOD_INVALID;
 }
 
+#if defined(__linux__)
+// DRM codes name a little-endian packed word; Vulkan's _PACK formats name a
+// native word and the others a byte order. XRGB8888 is bytes B,G,R,X (Vulkan
+// B8G8R8A8), XBGR8888 bytes R,G,B,X (R8G8B8A8, and also A8B8G8R8_PACK32).
+// RGBA8888 is bytes A,B,G,R, which no core VkFormat describes.
 VkFormat drm_format_to_vk_format(uint32_t f) noexcept {
     switch (f) {
         case DRM_FORMAT_XRGB8888:
@@ -340,10 +363,6 @@ VkFormat drm_format_to_vk_format(uint32_t f) noexcept {
         case DRM_FORMAT_XBGR8888:
         case DRM_FORMAT_ABGR8888:
             return VK_FORMAT_R8G8B8A8_UNORM;
-
-        case DRM_FORMAT_RGBX8888:
-        case DRM_FORMAT_RGBA8888:
-            return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
 
         case DRM_FORMAT_RGB565:
             return VK_FORMAT_R5G6B5_UNORM_PACK16;
@@ -399,7 +418,7 @@ uint32_t vk_format_to_drm_format(VkFormat vk) noexcept {
 
         case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
         case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
-            return DRM_FORMAT_RGBA8888;
+            return DRM_FORMAT_ABGR8888;
 
         case VK_FORMAT_R5G6B5_UNORM_PACK16:
             return DRM_FORMAT_RGB565;
@@ -442,5 +461,6 @@ uint32_t vk_format_to_drm_format(VkFormat vk) noexcept {
 bool is_drm_format_vulkan_compatible(uint32_t drm_fourcc) noexcept {
     return drm_format_to_vk_format(drm_fourcc) != VK_FORMAT_UNDEFINED;
 }
+#endif  // __linux__
 
 }  // namespace brodmabuf

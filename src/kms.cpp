@@ -186,9 +186,9 @@ bool KmsAtomicReq::set_in_fence(const KmsPlaneProps& props, uint32_t plane_id, i
     return add_property(plane_id, props.in_fence_fd, static_cast<uint64_t>(fence_fd));
 }
 
-bool KmsAtomicReq::set_out_fence_ptr(const KmsCrtcProps& props, uint32_t crtc_id, uint64_t* out_fence_ptr) noexcept {
-    if (!req_ || props.out_fence_ptr == 0 || !out_fence_ptr) return false;
-    return add_property(crtc_id, props.out_fence_ptr, reinterpret_cast<uint64_t>(out_fence_ptr));
+bool KmsAtomicReq::set_out_fence_ptr(const KmsCrtcProps& props, uint32_t crtc_id, int32_t* out_fence_fd) noexcept {
+    if (!req_ || props.out_fence_ptr == 0 || !out_fence_fd) return false;
+    return add_property(crtc_id, props.out_fence_ptr, reinterpret_cast<uintptr_t>(out_fence_fd));
 }
 
 Result<void> KmsAtomicReq::commit(int drm_fd, uint32_t flags, void* user_data) noexcept {
@@ -445,9 +445,9 @@ Result<UniqueFd> KmsPresenter::present(KmsFramebuffer& fb, int in_fence_fd, bool
         req.set_in_fence(pipeline_.plane_props, pipeline_.plane_id, in_fence_fd);
     }
 
-    uint64_t out_fence_val = ~0ULL;
+    int32_t out_fence_fd = -1;
     if (pipeline_.crtc_props.out_fence_ptr != 0) {
-        req.set_out_fence_ptr(pipeline_.crtc_props, pipeline_.crtc_id, &out_fence_val);
+        req.set_out_fence_ptr(pipeline_.crtc_props, pipeline_.crtc_id, &out_fence_fd);
     }
 
     uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT;
@@ -458,8 +458,8 @@ Result<UniqueFd> KmsPresenter::present(KmsFramebuffer& fb, int in_fence_fd, bool
     auto status = req.commit(dev_->fd(), flags);
     if (!status) return status.status();
 
-    if (pipeline_.crtc_props.out_fence_ptr != 0 && out_fence_val != ~0ULL) {
-        return UniqueFd(static_cast<int>(out_fence_val));
+    if (out_fence_fd >= 0) {
+        return UniqueFd(out_fence_fd);
     }
 
     return UniqueFd();
