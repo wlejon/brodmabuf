@@ -234,6 +234,19 @@ void test_export(VulkanContext& vk, GbmDevice* gbm, Gpu& gpu) {
     CHECK_EQ(attrs.value().drm_format, uint32_t(DRM_FORMAT_ARGB8888));
     CHECK_EQ(attrs.value().modifier, img.value()->modifier());
 
+    // Whatever the tiling, importing the exported DMA-BUF as a second image
+    // and copying it out must give the colour the first image was cleared to.
+    {
+        auto again = vk.import_dmabuf(attrs.value(), VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+        REQUIRE_OK(again);
+        CHECK_EQ(again.value()->modifier(), attrs.value().modifier);
+        auto pixels = gpu.read_image(again.value()->handle());
+        REQUIRE(pixels.size() == size_t(kW) * kH);
+        int bad = 0;
+        for (uint32_t p : pixels) bad += p != 0xffff00ffu;  // A=1 R=1 G=0 B=1
+        CHECK_EQ(bad, 0);
+    }
+
     if (!gbm) {
         bstest::skip_check("export into GBM", "no GBM device on this machine");
         return;
@@ -242,7 +255,8 @@ void test_export(VulkanContext& vk, GbmDevice* gbm, Gpu& gpu) {
     REQUIRE_OK(bo);
     CHECK_EQ(bo.value()->width(), kW);
     if (attrs.value().modifier != DRM_FORMAT_MOD_LINEAR) {
-        bstest::skip_check("exported pixels", "the driver chose a tiled modifier; only linear is read back on the CPU");
+        bstest::skip_check("exported pixels on the CPU",
+                           "the driver chose a tiled modifier (checked above through a Vulkan re-import)");
         return;
     }
     auto map = bo.value()->map(0, 0, kW, kH, GBM_BO_TRANSFER_READ);
