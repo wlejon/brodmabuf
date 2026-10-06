@@ -185,8 +185,9 @@ bool submit_signal(VulkanContext& vk, VkSemaphore sem) {
     return vkQueueWaitIdle(vk.queue()) == VK_SUCCESS;
 }
 
-void test_vulkan_semaphores(VulkanContext& vk, int drm_fd) {
-    // SYNC_FD: a signalled semaphore exports a sync_file that polls signalled.
+// SYNC_FD: a signalled semaphore exports a sync_file that polls signalled.
+// Needs no drm_syncobj, so it runs on any Vulkan driver (lavapipe included).
+void test_vulkan_sync_fd(VulkanContext& vk) {
     auto sem = create_exportable_semaphore(vk.device(), VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT);
     if (!sem.ok()) {
         bstest::skip_check("Vulkan SYNC_FD semaphores", std::string(sem.error_message()));
@@ -201,9 +202,11 @@ void test_vulkan_semaphores(VulkanContext& vk, int drm_fd) {
         }
         vkDestroySemaphore(vk.device(), sem.value(), nullptr);
     }
+}
 
-    // OPAQUE_FD: on a DRM-backed Vulkan driver this is a drm_syncobj. Signalled
-    // on the GPU, it must read as signalled through the kernel object.
+// OPAQUE_FD: on a DRM-backed Vulkan driver this is a drm_syncobj. Signalled
+// on the GPU, it must read as signalled through the kernel object.
+void test_vulkan_syncobj(VulkanContext& vk, int drm_fd) {
     auto opaque = create_exportable_semaphore(vk.device(), VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT);
     REQUIRE_OK(opaque);
     REQUIRE(submit_signal(vk, opaque.value()));
@@ -272,14 +275,17 @@ int main() {
     auto vk = VulkanContext::create_headless();
     if (!vk.ok()) {
         bstest::skip_check("Vulkan semaphore interop", std::string(vk.error_message()));
-    } else if (!have_syncobj) {
-        bstest::skip_check("Vulkan semaphore interop", "needs drm_syncobj on " + node);
     } else {
-        test_vulkan_semaphores(*vk.value(), drm_fd);
+        test_vulkan_sync_fd(*vk.value());
+        if (have_syncobj) {
+            test_vulkan_syncobj(*vk.value(), drm_fd);
+        } else {
+            bstest::skip_check("Vulkan semaphores as drm_syncobj", "needs drm_syncobj on " + node);
+        }
     }
 
-    if (!have_syncobj && !gbm.ok()) {
-        bstest::skip("test_sync", "neither drm_syncobj nor GBM is available on " + node);
+    if (!have_syncobj && !gbm.ok() && !vk.ok()) {
+        bstest::skip("test_sync", "neither drm_syncobj, GBM nor Vulkan is available on " + node);
     }
     return bstest::finish("test_sync");
 }

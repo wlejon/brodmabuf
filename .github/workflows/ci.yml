@@ -1,0 +1,132 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# brodmabuf has no siblings: no submodules, no ../ checkouts, and therefore no
+# submodule job. Everything it needs comes from the OS.
+#
+# Where each part is built and tested:
+#
+#   format model, plane layout, fd/Result types   every job
+#   unavailable reporting (test_unavailable)      windows-msvc (Release, Debug), macos-arm64
+#   GBM, Vulkan, sync, KMS (the Linux library)    linux-*, coverage
+#
+# GitHub's runners have no GPU, so the Linux jobs load two virtual devices on
+# the host (.github/ci/host-devices.sh) and run in debian:trixie, whose Mesa 25
+# has what the tests need: vkms, a KMS card GBM allocates on through
+# kms_swrast and test_kms takes DRM master and modesets on; and udmabuf, which
+# lavapipe allocates exportable memory from, so DMA-BUFs go into and out of a
+# real Vulkan driver. vkms implements no drm_syncobj, so test_sync's syncobj
+# and timeline parts skip there and say so (they run on GPU drivers).
+#
+# Every test that cannot run exits 77 and ctest lists it as skipped, never as
+# passed. Every test step ends with the skipped tests and the skipped checks
+# inside tests, each with its own reason (.github/ci/ctest.sh): that is what a
+# job really covered.
+
+jobs:
+  portable:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-msvc,       os: windows-2022, config: Release }
+          # Debug CRT: iterator debugging and checked fd operations.
+          - { name: windows-msvc-debug, os: windows-2022, config: Debug }
+          - { name: macos-arm64,        os: macos-15,     config: Release }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -B build
+          else
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.config }}
+          fi
+
+      - name: Build
+        run: cmake --build build --config ${{ matrix.config }} --parallel 4
+
+      - name: Test
+        shell: bash
+        run: .github/ci/ctest.sh --test-dir build -C ${{ matrix.config }}
+
+  linux:
+    name: linux-${{ matrix.cc }} · debian-trixie
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cc: gcc,   cxx: g++ }
+          - { cc: clang, cxx: clang++ }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load vkms and udmabuf
+        id: dev
+        run: .github/ci/host-devices.sh
+
+      - name: Build and test (debian:trixie)
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/w" ${{ steps.dev.outputs.docker_args }} \
+            -e CC=${{ matrix.cc }} -e CXX=${{ matrix.cxx }} -e CONFIG=Release -e COVERAGE=OFF \
+            -e BRODMABUF_DRM_DEVICE=${{ steps.dev.outputs.drm_device }} \
+            debian:trixie bash /w/.github/ci/linux.sh
+
+  # Linux, Debug (-O0), in the same environment as the linux jobs. The
+  # Windows and macOS builds compile only the portable part, which the Linux
+  # build measures too.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load vkms and udmabuf
+        id: dev
+        run: .github/ci/host-devices.sh
+
+      - name: Build, test and report (debian:trixie)
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/w" ${{ steps.dev.outputs.docker_args }} \
+            -e CC=gcc -e CXX=g++ -e CONFIG=Debug -e COVERAGE=ON \
+            -e BRODMABUF_DRM_DEVICE=${{ steps.dev.outputs.drm_device }} \
+            debian:trixie bash /w/.github/ci/linux.sh
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo '## Coverage — `src/` + `include/brodmabuf/`'
+            echo
+            echo 'Linux under vkms + lavapipe: drm_syncobj paths are not reached (vkms has none).'
+            echo
+            echo '```'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-html
+          path: coverage-html/
+          retention-days: 14

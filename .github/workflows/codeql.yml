@@ -1,0 +1,72 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+# A DMA-BUF description arrives from another process (a Wayland client, a
+# video decoder): plane counts, strides, offsets and sizes the library turns
+# into ioctl arguments, mmap lengths and Vulkan memory layouts. Integer
+# overflow in that size arithmetic and out-of-bounds plane indexing are the
+# realistic bugs, which is what the C++ queries look for.
+#
+# Two analyses, because each builds a different part: Linux (the whole
+# library) and Windows (the portable format model and layout math, plus the
+# unavailable factories). No siblings, so nothing is pre-built outside the
+# traced build.
+jobs:
+  analyze:
+    name: Analyze C++ (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux,   os: ubuntu-24.04, container: "debian:trixie" }
+          - { name: windows, os: windows-2022, container: "" }
+
+    steps:
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates git cmake ninja-build pkg-config g++ \
+            libdrm-dev libgbm-dev libvulkan-dev
+
+      - uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          queries: security-extended
+
+      - name: Configure and build (traced)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake -B build
+          else
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          fi
+          cmake --build build --config Debug --parallel 4
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp/os:${{ matrix.name }}
