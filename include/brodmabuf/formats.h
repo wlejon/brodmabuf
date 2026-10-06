@@ -6,6 +6,13 @@
 #if defined(__linux__)
 #include <drm_fourcc.h>
 #include <vulkan/vulkan.h>
+// Vendors newer than some distributions' libdrm (Debian 13 ships 2.4.124).
+#ifndef DRM_FORMAT_MOD_VENDOR_MTK
+#define DRM_FORMAT_MOD_VENDOR_MTK 0x0b
+#endif
+#ifndef DRM_FORMAT_MOD_VENDOR_APPLE
+#define DRM_FORMAT_MOD_VENDOR_APPLE 0x0c
+#endif
 #else
 #include "brodmabuf/drm_fourcc_compat.h"
 #endif
