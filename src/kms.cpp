@@ -322,11 +322,25 @@ Result<KmsPipeline> KmsDevice::find_default_pipeline() const {
         crtc_id = res->crtcs[0];
     }
 
+    int crtc_index = -1;
+    for (int i = 0; i < res->count_crtcs; ++i) {
+        if (res->crtcs[i] == crtc_id) {
+            crtc_index = i;
+            break;
+        }
+    }
+
     uint32_t primary_plane_id = 0;
     drmModePlaneResPtr plane_res = drmModeGetPlaneResources(drm_fd_.get());
     if (plane_res) {
         for (uint32_t i = 0; i < plane_res->count_planes; ++i) {
             uint32_t pid = plane_res->planes[i];
+            drmModePlanePtr plane = drmModeGetPlane(drm_fd_.get(), pid);
+            if (!plane) continue;
+            const bool crtc_compatible = (crtc_index < 0) || (plane->possible_crtcs & (1u << crtc_index));
+            drmModeFreePlane(plane);
+            if (!crtc_compatible) continue;
+
             KmsPlaneProps p_props = query_plane_props(pid);
             if (p_props.type != 0) {
                 drmModeObjectPropertiesPtr obj_props = drmModeObjectGetProperties(
