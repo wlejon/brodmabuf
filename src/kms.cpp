@@ -480,6 +480,11 @@ Result<UniqueFd> KmsPresenter::present(KmsFramebuffer& fb, int in_fence_fd, bool
 }
 
 bool KmsPresenter::handle_event(int timeout_ms) {
+    return handle_event(timeout_ms, nullptr, nullptr);
+}
+
+bool KmsPresenter::handle_event(int timeout_ms, KmsFlipEvent* flip, bool* got_flip) {
+    if (got_flip) *got_flip = false;
     if (!dev_ || !dev_->valid()) return false;
     struct pollfd pfd{};
     pfd.fd = dev_->fd();
@@ -487,12 +492,39 @@ bool KmsPresenter::handle_event(int timeout_ms) {
 
     int ret = ::poll(&pfd, 1, timeout_ms);
     if (ret > 0 && (pfd.revents & POLLIN)) {
-        drmEventContext evctx{};
-        evctx.version = DRM_EVENT_CONTEXT_VERSION;
-        drmHandleEvent(dev_->fd(), &evctx);
+        // drmHandleEvent hands the handler only the commit's user data, so
+        // read the event ourselves: one read returns every pending event.
+        alignas(8) char buf[1024];
+        const ssize_t len = ::read(dev_->fd(), buf, sizeof(buf));
+        if (len <= 0) return len == 0;
+        ssize_t i = 0;
+        while (i + static_cast<ssize_t>(sizeof(drm_event)) <= len) {
+            const auto* e = reinterpret_cast<const drm_event*>(buf + i);
+            if (e->length < sizeof(drm_event) || i + static_cast<ssize_t>(e->length) > len) break;
+            if (e->type == DRM_EVENT_FLIP_COMPLETE && e->length >= sizeof(drm_event_vblank)) {
+                const auto* vb = reinterpret_cast<const drm_event_vblank*>(e);
+                if (flip) {
+                    flip->sequence = vb->sequence;
+                    flip->timestamp_us = static_cast<uint64_t>(vb->tv_sec) * 1000000ull + vb->tv_usec;
+                    flip->crtc_id = vb->crtc_id;
+                }
+                if (got_flip) *got_flip = true;
+            }
+            i += e->length;
+        }
         return true;
     }
     return false;
+}
+
+double KmsPresenter::refresh_period_ms() const noexcept {
+    const auto& m = pipeline_.mode;
+    if (m.clock == 0 || m.htotal == 0 || m.vtotal == 0) return 0.0;
+    double frame_pixels = static_cast<double>(m.htotal) * m.vtotal;
+    if (m.flags & DRM_MODE_FLAG_INTERLACE) frame_pixels /= 2.0;
+    if (m.flags & DRM_MODE_FLAG_DBLSCAN) frame_pixels *= 2.0;
+    if (m.vscan > 1) frame_pixels *= m.vscan;
+    return frame_pixels / static_cast<double>(m.clock);  // clock is in kHz
 }
 
 }  // namespace brodmabuf

@@ -172,6 +172,17 @@ private:
     UniqueFd drm_fd_;
 };
 
+/// A completed page flip as the kernel reported it: the vblank it landed on
+/// (`sequence`, the CRTC's vblank counter) and when that vblank happened
+/// (`timestamp_us`, CLOCK_MONOTONIC microseconds on any kernel with
+/// DRM_CAP_TIMESTAMP_MONOTONIC, which is every kernel since 3.8). Two flips
+/// whose sequences differ by more than one were a vblank (or more) apart.
+struct KmsFlipEvent {
+    uint32_t sequence = 0;
+    uint64_t timestamp_us = 0;
+    uint32_t crtc_id = 0;
+};
+
 /// Presenter managing atomic page flips and presentation loop on a KMS display pipeline.
 class KmsPresenter {
 public:
@@ -199,6 +210,15 @@ public:
 
     /// Process page-flip events via `drmHandleEvent`. timeout_ms: milliseconds to wait.
     [[nodiscard]] bool handle_event(int timeout_ms = 100);
+
+    /// handle_event, also reporting the page flip it read: `*flip` is set and
+    /// `*got_flip` true when a flip-complete event was among the events
+    /// handled. Returns whether any event was read before the timeout.
+    [[nodiscard]] bool handle_event(int timeout_ms, KmsFlipEvent* flip, bool* got_flip);
+
+    /// The mode's exact refresh period in milliseconds (from its pixel clock
+    /// and totals, not the rounded vrefresh); 0 when the mode is unknown.
+    [[nodiscard]] double refresh_period_ms() const noexcept;
 
     [[nodiscard]] const KmsPipeline& pipeline() const noexcept { return pipeline_; }
 
