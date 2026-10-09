@@ -87,6 +87,53 @@ struct KmsPipeline {
     KmsPlaneProps plane_props;
     KmsCrtcProps crtc_props;
     KmsConnectorProps connector_props;
+    /// The CRTC's cursor plane (0 when it has none), and the cursor size the
+    /// driver takes (DRM_CAP_CURSOR_WIDTH / _HEIGHT; 64x64 when unreported).
+    uint32_t cursor_plane_id = 0;
+    KmsPlaneProps cursor_plane_props;
+    uint32_t cursor_width = 0;
+    uint32_t cursor_height = 0;
+};
+
+/// A CPU-written ARGB8888 (premultiplied) buffer with a framebuffer: a
+/// dumb buffer, the kind every KMS driver takes on its cursor plane.
+class KmsDumbBuffer {
+public:
+    ~KmsDumbBuffer() noexcept;
+    KmsDumbBuffer(const KmsDumbBuffer&) = delete;
+    KmsDumbBuffer& operator=(const KmsDumbBuffer&) = delete;
+
+    [[nodiscard]] static Result<std::unique_ptr<KmsDumbBuffer>> create(int drm_fd, uint32_t width,
+                                                                       uint32_t height);
+
+    /// The mapped pixels: `height` rows of `stride` bytes, B G R A in memory.
+    [[nodiscard]] uint8_t* pixels() const noexcept { return map_; }
+    [[nodiscard]] uint32_t stride() const noexcept { return stride_; }
+    [[nodiscard]] uint32_t width() const noexcept { return width_; }
+    [[nodiscard]] uint32_t height() const noexcept { return height_; }
+    [[nodiscard]] uint32_t fb_id() const noexcept { return fb_id_; }
+
+private:
+    KmsDumbBuffer() = default;
+    int drm_fd_ = -1;
+    uint32_t handle_ = 0;
+    uint32_t fb_id_ = 0;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
+    uint32_t stride_ = 0;
+    uint64_t size_ = 0;
+    uint8_t* map_ = nullptr;
+};
+
+/// What the cursor plane shows: `fb_id` (0: nothing) with its top-left at
+/// (x, y) on the CRTC — either may be negative — at the buffer's size.
+struct KmsCursor {
+    uint32_t fb_id = 0;
+    int32_t x = 0;
+    int32_t y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool operator==(const KmsCursor&) const = default;
 };
 
 /// RAII wrapper for an atomic modesetting request (`drmModeAtomicReqPtr`).
@@ -208,6 +255,20 @@ public:
     /// Returns out-fence fd when explicit sync is supported and requested.
     [[nodiscard]] Result<UniqueFd> present(KmsFramebuffer& fb, int in_fence_fd = -1, bool blocking = false);
 
+    /// The CRTC has a cursor plane set_cursor can drive.
+    [[nodiscard]] bool has_cursor_plane() const noexcept { return pipeline_.cursor_plane_id != 0; }
+    /// What the cursor plane shows from the next commit on: every present()
+    /// carries it, and commit_cursor() commits it alone. When a present()
+    /// with the cursor enabled is refused, it is retried with the cursor
+    /// plane off, and cursor_refused() says so until set_cursor changes it.
+    void set_cursor(const KmsCursor& cursor) noexcept;
+    [[nodiscard]] const KmsCursor& cursor() const noexcept { return cursor_; }
+    [[nodiscard]] bool cursor_refused() const noexcept { return cursor_refused_; }
+    /// Commit the cursor plane alone (non-blocking, with a page-flip event):
+    /// the pointer moves without anything being redrawn. Fails with EBUSY
+    /// while a flip is pending, like any non-blocking commit.
+    [[nodiscard]] Result<void> commit_cursor();
+
     /// Process page-flip events via `drmHandleEvent`. timeout_ms: milliseconds to wait.
     [[nodiscard]] bool handle_event(int timeout_ms = 100);
 
@@ -223,9 +284,14 @@ public:
     [[nodiscard]] const KmsPipeline& pipeline() const noexcept { return pipeline_; }
 
 private:
+    // Adds the cursor plane's state (cursor_, or off) to `req`.
+    void add_cursor(KmsAtomicReq& req, bool enabled) const noexcept;
+
     std::shared_ptr<KmsDevice> dev_;
     KmsPipeline pipeline_;
     uint32_t mode_blob_id_ = 0;
+    KmsCursor cursor_;
+    bool cursor_refused_ = false;
 };
 
 }  // namespace brodmabuf

@@ -106,6 +106,41 @@ void test_framebuffer(KmsDevice& kms, GbmDevice& gbm) {
     CHECK(!KmsFramebuffer::create_from_dmabuf(kms.fd(), bad).ok());
 }
 
+// A dumb ARGB buffer (the cursor's) and the pipeline's cursor plane: neither
+// needs master.
+void test_cursor_buffer(KmsDevice& kms) {
+    auto buf = KmsDumbBuffer::create(kms.fd(), 64, 64);
+    REQUIRE_OK(buf);
+    KmsDumbBuffer& b = *buf.value();
+    CHECK(b.fb_id() != 0u);
+    CHECK(b.pixels() != nullptr);
+    CHECK(b.stride() >= 64u * 4u);
+    b.pixels()[0] = 0xff;
+    b.pixels()[size_t(63) * b.stride() + 63 * 4 + 3] = 0xff;
+    drmModeFB2Ptr info = drmModeGetFB2(kms.fd(), b.fb_id());
+    if (info) {
+        CHECK_EQ(info->width, 64u);
+        CHECK_EQ(info->pixel_format, uint32_t(DRM_FORMAT_ARGB8888));
+        drmModeFreeFB2(info);
+    } else {
+        bstest::fail(__FILE__, __LINE__, "drmModeGetFB2 does not know the dumb framebuffer");
+    }
+    CHECK(!KmsDumbBuffer::create(kms.fd(), 0, 64).ok());
+
+    auto pipe = kms.find_default_pipeline();
+    if (!pipe.ok()) return;
+    if (pipe.value().cursor_plane_id == 0) {
+        bstest::skip_check("cursor plane", "the CRTC has no cursor plane");
+        return;
+    }
+    std::printf("cursor plane %u, %ux%u\n", pipe.value().cursor_plane_id, pipe.value().cursor_width,
+                pipe.value().cursor_height);
+    CHECK(pipe.value().cursor_plane_props.fb_id != 0u);
+    CHECK(pipe.value().cursor_plane_props.crtc_x != 0u);
+    CHECK(pipe.value().cursor_width >= 32u);
+    CHECK(pipe.value().cursor_height >= 32u);
+}
+
 void test_modeset(const std::shared_ptr<KmsDevice>& kms, GbmDevice& gbm) {
     auto pipe_res = kms->find_default_pipeline();
     if (!pipe_res.ok()) {
@@ -185,6 +220,29 @@ void test_modeset(const std::shared_ptr<KmsDevice>& kms, GbmDevice& gbm) {
     REQUIRE_OK(out2);
     CHECK(presenter->handle_event(1000));
 
+    // The cursor plane: up with a frame, then moved alone.
+    if (presenter->has_cursor_plane()) {
+        auto cur = KmsDumbBuffer::create(kms->fd(), pipe.cursor_width, pipe.cursor_height);
+        REQUIRE_OK(cur);
+        KmsDumbBuffer& c = *cur.value();
+        for (uint32_t y = 0; y < 16; ++y)
+            for (uint32_t x = 0; x < 16; ++x)
+                reinterpret_cast<uint32_t*>(c.pixels() + size_t(y) * c.stride())[x] = 0xffffffffu;
+        presenter->set_cursor(KmsCursor{c.fb_id(), 100, 100, c.width(), c.height()});
+        auto out3 = presenter->present(*fb_blue.value(), -1, false);
+        REQUIRE_OK(out3);
+        CHECK(!presenter->cursor_refused());
+        CHECK(presenter->handle_event(1000));
+        presenter->set_cursor(KmsCursor{c.fb_id(), -4, 200, c.width(), c.height()});
+        CHECK_OK(presenter->commit_cursor());
+        CHECK(presenter->handle_event(1000));
+        presenter->set_cursor(KmsCursor{});
+        CHECK_OK(presenter->commit_cursor());
+        CHECK(presenter->handle_event(1000));
+    } else {
+        bstest::skip_check("cursor plane", "the CRTC has no cursor plane");
+    }
+
     // Turn the output off again so the test leaves the CRTC as it found it.
     KmsAtomicReq off;
     off.add_property(pipe.plane_id, pipe.plane_props.fb_id, 0);
@@ -215,6 +273,7 @@ int main() {
     auto& gbm = *gbm_res.value();
 
     test_framebuffer(*kms, gbm);
+    test_cursor_buffer(*kms);
 
     if (drmIsMaster(kms->fd())) {
         test_modeset(kms, gbm);

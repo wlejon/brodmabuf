@@ -2,7 +2,9 @@
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/mman.h>
 #include <unistd.h>
+#include <drm_fourcc.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
@@ -127,6 +129,57 @@ Result<std::unique_ptr<KmsFramebuffer>> KmsFramebuffer::create_from_dmabuf(
 }
 
 // -----------------------------------------------------------------------------
+// KmsDumbBuffer
+// -----------------------------------------------------------------------------
+
+KmsDumbBuffer::~KmsDumbBuffer() noexcept {
+    if (map_) munmap(map_, size_);
+    if (fb_id_ != 0) drmModeRmFB(drm_fd_, fb_id_);
+    if (handle_ != 0) {
+        drm_mode_destroy_dumb destroy{};
+        destroy.handle = handle_;
+        drmIoctl(drm_fd_, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+    }
+}
+
+Result<std::unique_ptr<KmsDumbBuffer>> KmsDumbBuffer::create(int drm_fd, uint32_t width, uint32_t height) {
+    if (drm_fd < 0 || width == 0 || height == 0) return Status::invalid_argument("Invalid DRM fd or size");
+    std::unique_ptr<KmsDumbBuffer> buf(new KmsDumbBuffer());
+    buf->drm_fd_ = drm_fd;
+    buf->width_ = width;
+    buf->height_ = height;
+
+    drm_mode_create_dumb create{};
+    create.width = width;
+    create.height = height;
+    create.bpp = 32;
+    if (drmIoctl(drm_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create) != 0) {
+        return Status::system_error("DRM_IOCTL_MODE_CREATE_DUMB failed: " + std::string(std::strerror(errno)));
+    }
+    buf->handle_ = create.handle;
+    buf->stride_ = create.pitch;
+    buf->size_ = create.size;
+
+    const uint32_t handles[4] = {create.handle, 0, 0, 0};
+    const uint32_t pitches[4] = {create.pitch, 0, 0, 0};
+    const uint32_t offsets[4] = {0, 0, 0, 0};
+    if (drmModeAddFB2(drm_fd, width, height, DRM_FORMAT_ARGB8888, handles, pitches, offsets, &buf->fb_id_, 0) != 0) {
+        return Status::system_error("drmModeAddFB2 (dumb) failed: " + std::string(std::strerror(errno)));
+    }
+
+    drm_mode_map_dumb map{};
+    map.handle = create.handle;
+    if (drmIoctl(drm_fd, DRM_IOCTL_MODE_MAP_DUMB, &map) != 0) {
+        return Status::system_error("DRM_IOCTL_MODE_MAP_DUMB failed: " + std::string(std::strerror(errno)));
+    }
+    void* p = mmap(nullptr, create.size, PROT_READ | PROT_WRITE, MAP_SHARED, drm_fd, static_cast<off_t>(map.offset));
+    if (p == MAP_FAILED) return Status::system_error("mmap of a dumb buffer failed: " + std::string(std::strerror(errno)));
+    buf->map_ = static_cast<uint8_t*>(p);
+    std::memset(buf->map_, 0, create.size);
+    return buf;
+}
+
+// -----------------------------------------------------------------------------
 // KmsAtomicReq
 // -----------------------------------------------------------------------------
 
@@ -196,7 +249,10 @@ Result<void> KmsAtomicReq::commit(int drm_fd, uint32_t flags, void* user_data) n
 
     int ret = drmModeAtomicCommit(drm_fd, req_, flags, user_data);
     if (ret != 0) {
-        return Status::system_error("drmModeAtomicCommit failed: " + std::string(std::strerror(errno)));
+        const int err = errno;
+        Status s = Status::system_error("drmModeAtomicCommit failed: " + std::string(std::strerror(err)));
+        errno = err;  // callers tell EBUSY from EINVAL by it
+        return s;
     }
 
     return Status::ok();
@@ -331,6 +387,7 @@ Result<KmsPipeline> KmsDevice::find_default_pipeline() const {
     }
 
     uint32_t primary_plane_id = 0;
+    uint32_t cursor_plane_id = 0;
     drmModePlaneResPtr plane_res = drmModeGetPlaneResources(drm_fd_.get());
     if (plane_res) {
         for (uint32_t i = 0; i < plane_res->count_planes; ++i) {
@@ -348,8 +405,10 @@ Result<KmsPipeline> KmsDevice::find_default_pipeline() const {
                 if (obj_props) {
                     for (uint32_t j = 0; j < obj_props->count_props; ++j) {
                         if (obj_props->props[j] == p_props.type) {
-                            if (obj_props->prop_values[j] == DRM_PLANE_TYPE_PRIMARY) {
+                            if (obj_props->prop_values[j] == DRM_PLANE_TYPE_PRIMARY && primary_plane_id == 0) {
                                 primary_plane_id = pid;
+                            } else if (obj_props->prop_values[j] == DRM_PLANE_TYPE_CURSOR && cursor_plane_id == 0) {
+                                cursor_plane_id = pid;
                             }
                             break;
                         }
@@ -357,7 +416,7 @@ Result<KmsPipeline> KmsDevice::find_default_pipeline() const {
                     drmModeFreeObjectProperties(obj_props);
                 }
             }
-            if (primary_plane_id != 0) break;
+            if (primary_plane_id != 0 && cursor_plane_id != 0) break;
         }
         drmModeFreePlaneResources(plane_res);
     }
@@ -370,6 +429,13 @@ Result<KmsPipeline> KmsDevice::find_default_pipeline() const {
     pipeline.plane_props = query_plane_props(primary_plane_id);
     pipeline.crtc_props = query_crtc_props(crtc_id);
     pipeline.connector_props = query_connector_props(conn->connector_id);
+    if (cursor_plane_id != 0) {
+        pipeline.cursor_plane_id = cursor_plane_id;
+        pipeline.cursor_plane_props = query_plane_props(cursor_plane_id);
+        uint64_t cw = 0, ch = 0;
+        pipeline.cursor_width = drmGetCap(drm_fd_.get(), DRM_CAP_CURSOR_WIDTH, &cw) == 0 && cw ? uint32_t(cw) : 64;
+        pipeline.cursor_height = drmGetCap(drm_fd_.get(), DRM_CAP_CURSOR_HEIGHT, &ch) == 0 && ch ? uint32_t(ch) : 64;
+    }
 
     drmModeFreeConnector(conn);
     drmModeFreeResources(res);
@@ -404,7 +470,8 @@ KmsPresenter::~KmsPresenter() noexcept {
 }
 
 KmsPresenter::KmsPresenter(KmsPresenter&& other) noexcept
-    : dev_(std::move(other.dev_)), pipeline_(other.pipeline_), mode_blob_id_(other.mode_blob_id_) {
+    : dev_(std::move(other.dev_)), pipeline_(other.pipeline_), mode_blob_id_(other.mode_blob_id_),
+      cursor_(other.cursor_), cursor_refused_(other.cursor_refused_) {
     other.mode_blob_id_ = 0;
 }
 
@@ -416,6 +483,8 @@ KmsPresenter& KmsPresenter::operator=(KmsPresenter&& other) noexcept {
         dev_ = std::move(other.dev_);
         pipeline_ = other.pipeline_;
         mode_blob_id_ = other.mode_blob_id_;
+        cursor_ = other.cursor_;
+        cursor_refused_ = other.cursor_refused_;
         other.mode_blob_id_ = 0;
     }
     return *this;
@@ -443,33 +512,75 @@ Result<void> KmsPresenter::initialize_modeset(KmsFramebuffer& initial_fb) {
         pipeline_.plane_props, pipeline_.plane_id, pipeline_.crtc_id, initial_fb.fb_id(),
         0, 0, pipeline_.mode.hdisplay, pipeline_.mode.vdisplay,
         0, 0, pipeline_.mode.hdisplay, pipeline_.mode.vdisplay);
+    // Whatever cursor a previous master left up goes; this one's comes with
+    // the first present.
+    add_cursor(req, false);
 
     return req.commit(dev_->fd(), DRM_MODE_ATOMIC_ALLOW_MODESET);
 }
 
-Result<UniqueFd> KmsPresenter::present(KmsFramebuffer& fb, int in_fence_fd, bool blocking) {
+void KmsPresenter::add_cursor(KmsAtomicReq& req, bool enabled) const noexcept {
+    if (pipeline_.cursor_plane_id == 0) return;
+    const KmsPlaneProps& p = pipeline_.cursor_plane_props;
+    const uint32_t id = pipeline_.cursor_plane_id;
+    if (!enabled || cursor_.fb_id == 0) {
+        req.add_property(id, p.fb_id, 0);
+        req.add_property(id, p.crtc_id, 0);
+        return;
+    }
+    req.set_plane(p, id, pipeline_.crtc_id, cursor_.fb_id, cursor_.x, cursor_.y, cursor_.width, cursor_.height, 0, 0,
+                  cursor_.width, cursor_.height);
+}
+
+void KmsPresenter::set_cursor(const KmsCursor& cursor) noexcept {
+    // A new image or a hidden cursor is worth trying again; a move is not
+    // (a refusal is about the plane and buffer, not where it is).
+    if (cursor.fb_id != cursor_.fb_id || cursor.width != cursor_.width || cursor.height != cursor_.height)
+        cursor_refused_ = false;
+    cursor_ = cursor;
+}
+
+Result<void> KmsPresenter::commit_cursor() {
+    if (pipeline_.cursor_plane_id == 0) return Status::not_found("The CRTC has no cursor plane");
     KmsAtomicReq req;
+    add_cursor(req, !cursor_refused_);
+    return req.commit(dev_->fd(), DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_ATOMIC_NONBLOCK);
+}
 
-    req.set_plane(
-        pipeline_.plane_props, pipeline_.plane_id, pipeline_.crtc_id, fb.fb_id(),
-        0, 0, pipeline_.mode.hdisplay, pipeline_.mode.vdisplay,
-        0, 0, pipeline_.mode.hdisplay, pipeline_.mode.vdisplay);
-
-    if (in_fence_fd >= 0) {
-        req.set_in_fence(pipeline_.plane_props, pipeline_.plane_id, in_fence_fd);
-    }
-
-    int32_t out_fence_fd = -1;
-    if (pipeline_.crtc_props.out_fence_ptr != 0) {
-        req.set_out_fence_ptr(pipeline_.crtc_props, pipeline_.crtc_id, &out_fence_fd);
-    }
-
+Result<UniqueFd> KmsPresenter::present(KmsFramebuffer& fb, int in_fence_fd, bool blocking) {
     uint32_t flags = DRM_MODE_PAGE_FLIP_EVENT;
     if (!blocking) {
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
     }
+    int32_t out_fence_fd = -1;
+    auto commit = [&](bool with_cursor) {
+        KmsAtomicReq req;
+        req.set_plane(
+            pipeline_.plane_props, pipeline_.plane_id, pipeline_.crtc_id, fb.fb_id(),
+            0, 0, pipeline_.mode.hdisplay, pipeline_.mode.vdisplay,
+            0, 0, pipeline_.mode.hdisplay, pipeline_.mode.vdisplay);
+        if (in_fence_fd >= 0) {
+            req.set_in_fence(pipeline_.plane_props, pipeline_.plane_id, in_fence_fd);
+        }
+        if (pipeline_.crtc_props.out_fence_ptr != 0) {
+            req.set_out_fence_ptr(pipeline_.crtc_props, pipeline_.crtc_id, &out_fence_fd);
+        }
+        add_cursor(req, with_cursor);
+        return req.commit(dev_->fd(), flags);
+    };
 
-    auto status = req.commit(dev_->fd(), flags);
+    const bool cursor_on = cursor_.fb_id != 0 && !cursor_refused_;
+    auto status = commit(cursor_on);
+    // A driver that will not put this cursor over this frame (a scaled or
+    // odd-format primary, a buffer size it does not take): the frame goes up
+    // without it, and the caller draws the cursor itself from now on.
+    if (!status && cursor_on && (errno == EINVAL || errno == ERANGE)) {
+        auto retry = commit(false);
+        if (retry) {
+            cursor_refused_ = true;
+            status = std::move(retry);
+        }
+    }
     if (!status) return status.status();
 
     if (out_fence_fd >= 0) {
